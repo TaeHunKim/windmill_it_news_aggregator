@@ -1,5 +1,5 @@
 import wmill
-from typing import TypedDict
+from typing import TypedDict, Dict, Any
 import requests
 import telegramify_markdown
 import google.generativeai as genai
@@ -7,36 +7,100 @@ import json
 import time
 from google.api_core.exceptions import ResourceExhausted
 import trafilatura
-import telegramify_markdown
 from bs4 import BeautifulSoup
 
 genai.configure(api_key=wmill.get_variable("u/admin/googleai_api_key_free"))
 
-# This system prompt contains all the logic you requested.
-# The model will follow these rules.
-SYSTEM_PROMPT = """
-You are a text processing expert. Your task is to process the given English text and return a JSON object.
+def process_weather_info_with_gemini(data: Dict[str, Any], max_retries=3, delay_seconds=60):
+    # (1) 시스템 프롬프트: 모델의 역할, 규칙, 페르소나 정의
+    SYSTEM_PROMPT = """
+    당신은 날씨 데이터를 분석하여 사용자에게 조언을 주는 유용한 AI 비서입니다.
+    당신의 유일한 임무는 입력된 JSON 날씨 데이터를 기반으로, 번역 및 외출 제안이 포함된 JSON 객체 하나를 반환하는 것입니다.
+    다른 설명이나 텍스트를 절대 추가하지 마세요.
 
-Follow these steps precisely:
-1.  First, clean the input text by removing all XML, HTML, and Markdown syntax (e.g., tags like <p>, <div>, and markers like **, #, [text](link)). Get the raw, plain text content.
-2.  Count the number of sentences in this *cleaned* plain text.
-3.  Apply logic based on the sentence count:
-    -   **If 2 sentences or fewer:** The 'english' field in the JSON must be the original *cleaned* text, exactly as it is.
-    -   **If 3 sentences or more:** The 'english' field in the JSON must be a concise, one-or-two-sentence summary of the *cleaned* text.
-4.  Translate the content of the 'english' field (whether it's the original text or the summary) into Korean. Put this translation in the 'korean' field.
-5.  Return *only* the final JSON object, with the exact schema: {"english": "...", "korean": "..."}.
-    Do not include any other text, explanations, or markdown delimiters (like ```json).
-"""
+    다음은 'suggestion' 필드를 생성할 때 반드시 따라야 할 규칙입니다 (이 외에 다른 조언이 있다면 추가해도 좋습니다):
+    - [강수] '오늘 강수 확률 (%)'가 30% 이상이면 우산을 챙기라는 조언을 포함합니다.
+    - [대기질] '대기질 지수 (AQI)', '미세먼지 (PM2.5)', '초미세먼지 (PM10)', '오존 (O3)' 값에 '나쁨' 또는 '매우 나쁨'이 포함되면, 외출을 자제하거나 마스크 착용을 권장합니다.
+    - [자외선] '오늘 자외선 지수 (UVI)'가 6 이상이면(높음), 8 이상이면(매우 높음) 자외선 차단제, 모자, 선글라스 등을 권장합니다.
+    - [일교차] '최고 기온 (°C)'과 '최저 기온 (°C)'의 차이가 10도 이상이면 겉옷을 챙겨 체온 조절에 유의하라고 조언합니다.
+    - [바람] '오늘 풍속 (m/s)'이 7 m/s 이상이면 바람이 강하게 분다는 사실을 언급합니다.
+    - [긍정] 날씨와 공기 질이 모두 좋다면(예: 맑음, 강수확률 낮음, AQI 좋음/보통), 야외 활동하기 좋은 날씨라고 언급합니다.
+    - [종합] 이 모든 조건을 종합하여 하나의 자연스러운 문단으로 'suggestion'을 만듭니다.
+    """
 
-# Configure the model to use the system prompt and JSON output mode
-model = genai.GenerativeModel(
-    'gemini-2.5-flash',
-    system_instruction=SYSTEM_PROMPT,
-    generation_config={
-        "response_mime_type": "application/json",
-        "temperature": 0.0  # <-- Add this line for maximum predictability
-    }
-)
+    # (2) 사용자 프롬프트 템플릿: 실제 데이터와 작업 지시
+    USER_PROMPT_TEMPLATE = """
+    다음 JSON 날씨 데이터를 분석해 주세요.
+
+    [입력 데이터]
+    {input_data}
+
+    [출력 스키마]
+    {{
+    "location_ko": "번역된 위치 ('위치' 필드 번역)",
+    "summary_ko": "번역된 요약 ('요약' 필드 번역)",
+    "alert_ko": "번역된 경보 ('경보' 필드 번역, 없으면 빈 문자열)",
+    "suggestion": "시스템 프롬프트의 모든 규칙에 따라 생성된 종합 외출 제안 멘트"
+    }}
+    """
+
+    # (3) 생성 설정: Temperature 및 JSON 모드 설정
+    GENERATION_CONFIG = genai.GenerationConfig(
+        temperature=0.2,  # 일관된 논리 + 약간 자연스러운 문장
+        response_mime_type="application/json" # JSON 출력 모드 강제
+    )
+
+    print("Gemini API에 날씨 분석 요청 중...")
+        # 1. 모델 초기화 (시스템 프롬프트, 생성 설정 적용)
+    model = genai.GenerativeModel(
+        model_name='gemini-2.5-flash',
+        system_instruction=SYSTEM_PROMPT,
+        generation_config=GENERATION_CONFIG
+    )
+    
+    # 2. 사용자 프롬프트 완성
+    # (json.dumps로 데이터를 문자열로 변환)
+    user_prompt = USER_PROMPT_TEMPLATE.format(
+        input_data=json.dumps(data, indent=2, ensure_ascii=False)
+    )
+        
+    current_try = 0
+    while current_try <= max_retries:
+        try:
+            # Send the text to the model.
+            # The model already knows the rules from the SYSTEM_PROMPT.
+            response = model.generate_content(user_prompt)
+            
+            # The model, in JSON mode, should return a clean JSON string.
+            # We parse it into a Python dictionary.
+            result_json = json.loads(response.text)
+            return result_json
+
+        except ResourceExhausted as e:
+            # This exception is thrown on HTTP 429 (Rate Limit / Token Limit)
+            current_try += 1
+            if current_try > max_retries:
+                print(f"[Error] Max retries reached for input: {user_prompt[:50]}...")
+                print(f"Last error: {e}")
+                raise
+            
+            print(f"[Warning] Rate limit exceeded. Waiting for {delay_seconds} seconds... (Attempt {current_try}/{max_retries})")
+            time.sleep(delay_seconds)
+        
+        except json.JSONDecodeError as e:
+            # The model returned invalid JSON
+            print(f"[Error] Failed to decode JSON from model response.")
+            print(f"       Input text was: {user_prompt[:100]}...")
+            print(f"       Model response was: {response.text}")
+            raise e
+        
+        except Exception as e:
+            # Catch other potential errors (e.g., connection issues)
+            print(f"[Error] An unexpected error occurred: {e}")
+            raise e
+
+    raise RuntimeError("Unknown error from AI process")
+
 
 def process_text_with_gemini(text_input, max_retries=3, delay_seconds=60):
     """
@@ -53,6 +117,32 @@ def process_text_with_gemini(text_input, max_retries=3, delay_seconds=60):
         dict: A dictionary in the format {'english': '...', 'korean': '...'}
               or None if processing fails after retries.
     """
+
+    # This system prompt contains all the logic you requested.
+    # The model will follow these rules.
+    SYSTEM_PROMPT = """
+    You are a text processing expert. Your task is to process the given English text and return a JSON object.
+
+    Follow these steps precisely:
+    1.  First, clean the input text by removing all XML, HTML, and Markdown syntax (e.g., tags like <p>, <div>, and markers like **, #, [text](link)). Get the raw, plain text content.
+    2.  Count the number of sentences in this *cleaned* plain text.
+    3.  Apply logic based on the sentence count:
+        -   **If 2 sentences or fewer:** The 'english' field in the JSON must be the original *cleaned* text, exactly as it is.
+        -   **If 3 sentences or more:** The 'english' field in the JSON must be a concise, one-or-two-sentence summary of the *cleaned* text.
+    4.  Translate the content of the 'english' field (whether it's the original text or the summary) into Korean. Put this translation in the 'korean' field.
+    5.  Return *only* the final JSON object, with the exact schema: {"english": "...", "korean": "..."}.
+        Do not include any other text, explanations, or markdown delimiters (like ```json).
+    """
+
+    # Configure the model to use the system prompt and JSON output mode
+    model = genai.GenerativeModel(
+        'gemini-2.5-flash',
+        system_instruction=SYSTEM_PROMPT,
+        generation_config={
+            "response_mime_type": "application/json",
+            "temperature": 0.0  # <-- Add this line for maximum predictability
+        }
+    )
     current_try = 0
     while current_try <= max_retries:
         try:
@@ -150,12 +240,14 @@ def split_string_by_lines(long_string: str, max_length: int = 4096) -> list[str]
 class telegram(TypedDict):
     token: str
 
-def send_to_telegram(message: str, chat_id: int = int(wmill.get_variable("u/admin/telegram_chat_id"))):
-    token = wmill.get_resource("u/admin/telegram_token_resource")
+def send_to_telegram(message: str, chat_id: int = int(wmill.get_variable("u/admin/telegram_chat_id")), escaped: bool = False, token = wmill.get_resource("u/admin/telegram_token_resource")):
     telegram_url = f"https://api.telegram.org/bot{token['token']}/sendMessage"
+    text = message
+    if not escaped:
+        text = telegramify_markdown.markdownify(message),
     payload = {
         "chat_id": chat_id,
-        "text": telegramify_markdown.markdownify(message),
+        "text": text,
         "parse_mode":'MarkdownV2'
     }
     response = requests.post(telegram_url, data=payload)
@@ -165,10 +257,10 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
 }
 
-def send_long_message_to_telegram(message: str, chat_id: int = int(wmill.get_variable("u/admin/telegram_chat_id"))):
+def send_long_message_to_telegram(message: str, chat_id: int = int(wmill.get_variable("u/admin/telegram_chat_id")), token = wmill.get_resource("u/admin/telegram_token_resource")):
     splitted_msg = split_string_by_lines(message)
     for m in splitted_msg:
-        send_to_telegram(m, chat_id)
+        send_to_telegram(m, chat_id, token=token)
 
 def get_content_from_link(url):
     try:
