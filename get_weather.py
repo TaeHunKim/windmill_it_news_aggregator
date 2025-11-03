@@ -5,6 +5,9 @@ from typing import Dict, Any
 import traceback
 from holidayskr import today_is_holiday
 import telegramify_markdown
+import json
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderUnavailable, GeocoderTimedOut
 
 from u.admin.news_parsing_utils import get_content_from_link, process_weather_info_with_gemini, send_long_message_to_telegram, send_to_telegram
 
@@ -268,10 +271,10 @@ def format_weather_for_telegram(data: dict) -> str:
     
     # 헤더
     message_parts.append(f"*{location.strip()} 날씨 브리핑* 🌦")
-    message_parts.append(f"_{summary}_")
+    message_parts.append(f"*{summary}*")
     
     # 제안 (가장 중요)
-    message_parts.append(f"\n*{suggestion}*")
+    message_parts.append(f"\n{suggestion}")
     
     # 경보 (있을 경우)
     if alert_message:
@@ -321,15 +324,68 @@ def format_weather_for_telegram(data: dict) -> str:
     # 모든 부분을 개행 문자로 연결
     return "\n".join(message_parts)
 
-def main(lat: float, lon: float,):
+def get_weather_message(lat: float, lon: float, with_send_to_telegram: bool = True):
+    try:
+        location_data = get_and_parse_data(lat, lon)
+        message = format_weather_for_telegram(location_data)
+    except Exception as e:
+        print(traceback.format_exc())
+        message = f"Failed to get weather: {e}"
+    finally:
+        if with_send_to_telegram:
+            send_to_telegram(message, escaped=True, token=wmill.get_resource("u/admin/telegram_token_resource_2"))
+        return message
+
+def get_home_weather(with_send_to_telegram: bool = True):
+    locations = json.loads(wmill.get_variable("u/admin/important_locations"))
+    location = locations.get("home")
+    return get_weather_message(*location, with_send_to_telegram=with_send_to_telegram)
+
+def get_office_weather(with_send_to_telegram: bool = True):
+    locations = json.loads(wmill.get_variable("u/admin/important_locations"))
+    location = locations.get("office")
+    return get_weather_message(*location, with_send_to_telegram=with_send_to_telegram)
+
+def get_parent_home_weather(with_send_to_telegram: bool = True):
+    locations = json.loads(wmill.get_variable("u/admin/important_locations"))
+    location = locations.get("parent_home")
+    return get_weather_message(*location, with_send_to_telegram=with_send_to_telegram)
+
+def _get_location_from_name(location_name:str):
+    try:
+        geolocator = Nominatim(user_agent="admin-weather-bot-v1")
+        location = geolocator.geocode(location_name)
+
+        # 3. 결과 확인
+        if location:
+            print(f"입력: {location_name}")
+            print(f"주소: {location.address}")
+            print(f"위도: {location.latitude}")
+            print(f"경도: {location.longitude}")
+            return location.latitude, location.longitude
+        else:
+            raise RuntimeError("Cannot find location")
+
+    except Exception:
+        raise
+
+def get_weather_message_from_location_name(location_name:str, with_send_to_telegram: bool = False):
+    try:
+        lat, lon = _get_location_from_name(location_name)
+        message = get_weather_message(lat, lon, with_send_to_telegram=with_send_to_telegram)
+        return message
+    except Exception as e:
+        print(traceback.format_exc())
+        message = f"Failed to get weather: {e}"
+        return message
+
+def main(lat: float, lon: float):
     print(f"{lat}, {lon}")
     try:
-        current_location_data = get_and_parse_data(lat, lon)
-        send_to_telegram(format_weather_for_telegram(current_location_data), escaped=True, token=wmill.get_resource("u/admin/telegram_token_resource_2"))
+        current_location_data = get_weather_message(lat, lon, with_send_to_telegram=True)
 
-        if not today_is_holiday() and "구리" in current_location_data["위치"]:
-            office_location_data = get_and_parse_data(37.501095, 127.003480)
-            send_to_telegram(format_weather_for_telegram(office_location_data), escaped=True, token=wmill.get_resource("u/admin/telegram_token_resource_2"))
+        if not today_is_holiday() and wmill.get_variable("u/admin/home_location") in current_location_data:
+            get_office_weather(with_send_to_telegram=True)
 
         response = {
             "windmill_status_code":200,

@@ -3,7 +3,7 @@ import feedparser
 import requests
 import traceback
 
-from u.rapaellk.news_parsing_utils import get_content_from_link, process_text_with_gemini, send_long_message_to_telegram, send_to_telegram, remove_html_tags_bs4
+from u.admin.news_parsing_utils import get_content_from_link, process_text_with_gemini, send_long_message_to_telegram, send_to_telegram, remove_html_tags_bs4
 
 def techmeme():
     try:
