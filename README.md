@@ -1,1 +1,1 @@
-# windmill_it_news_aggregator
+# windmill_scripts
