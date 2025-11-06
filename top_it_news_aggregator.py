@@ -3,7 +3,7 @@ import feedparser
 import requests
 import traceback
 
-from u.admin.news_parsing_utils import get_content_from_link, process_text_with_gemini, send_long_message_to_telegram, send_to_telegram, remove_html_tags_bs4
+from u.rapaellk.news_parsing_utils import get_content_from_link, process_text_with_gemini, send_long_message_to_telegram, send_to_telegram, remove_html_tags_bs4
 
 def techmeme():
     try:
@@ -54,7 +54,7 @@ def hacker_news(limit=10):
                     message_to_send += f"* [{title}]({link})\nCannot find its content...\n\n"
         print(message_to_send)       
         send_long_message_to_telegram(message_title + message_to_send)
-    except requests.RequestException as e:
+    except Exception as e:
         print(traceback.format_exc())
         message = f"Failed to get news from Hacker News: `{e}`"
         send_to_telegram(message)
@@ -77,7 +77,13 @@ def geeknews():
         send_to_telegram(message)
 
 def main():
-    techmeme()
-    hacker_news()
-    geeknews()
+    #techmeme()
+    #hacker_news()
+    #geeknews()
+    google_news_tech_kor = 'https://news.google.com/topics/CAAqKAgKIiJDQkFTRXdvSkwyMHZNR1ptZHpWbUVnSnJieG9DUzFJb0FBUAE?ceid=KR:ko&oc=3'
+    google_news_tech_us = 'https://news.google.com/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGRqTVhZU0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US%3Aen'
+    google_news_message = "**Top News on Google News**\n"
+    google_news_message += f"[Kor]({google_news_tech_kor})\n"
+    google_news_message += f"[US]({google_news_tech_us})"
+    send_to_telegram(google_news_message)
     return 'done'

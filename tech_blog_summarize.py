@@ -7,7 +7,7 @@ import traceback
 from typing import Set, Dict, Any, Optional, List, TypedDict
 import json
 
-from u.admin.news_parsing_utils import get_content_from_link, process_text_with_gemini, send_long_message_to_telegram, send_to_telegram
+from u.rapaellk.news_parsing_utils import get_content_from_link, process_text_with_gemini, send_long_message_to_telegram, send_to_telegram
 
 def get_item_id(item) -> Optional[str]:
     """
@@ -45,7 +45,7 @@ def main():
             message_title = f"**Recent updates on {blog_name}**\n"
             message_to_send = ""
             if blog_name == "Google Developers Blog":
-                yesterday_list = json.loads(wmill.get_variable("u/admin/google_developer_yesterday_rss"))
+                yesterday_list = json.loads(wmill.get_variable("u/rapaellk/google_developer_yesterday_rss"))
                 yesterday_set = set(yesterday_list)
                 today_set = set()
             for index, entry in enumerate(feed.entries):
@@ -82,7 +82,7 @@ def main():
             send_long_message_to_telegram(message_title + message_to_send)
             if blog_name == "Google Developers Blog":
                 today_list = list(today_set)
-                wmill.set_variable("u/admin/google_developer_yesterday_rss", json.dumps(today_list))
+                wmill.set_variable("u/rapaellk/google_developer_yesterday_rss", json.dumps(today_list))
         except Exception as e:
             print(traceback.format_exc())
             message = f"""Error on handling blog {blog_name}: `{e}`"""
